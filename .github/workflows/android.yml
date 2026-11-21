@@ -1,0 +1,70 @@
+name: SJ AI Android Build
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths-ignore: [ "README.md", "docs/**" ]
+
+permissions:
+  contents: read
+
+env:
+  MODEL_URL: https://huggingface.co/QuantFactory/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B.Q4_K_M.gguf
+  MODEL_SHA256: 7af3fdf842f87b24672f8a7f1dd50404043f0bfb71093ff91c31d2b49df4631d
+
+jobs:
+  model-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Download and verify model
+        run: |
+          mkdir -p app/src/main/assets
+          curl -L --fail --retry 3 "$MODEL_URL" -o /tmp/model.gguf
+          echo "$MODEL_SHA256  /tmp/model.gguf" | sha256sum -c -
+          python scripts/verify_gguf.py /tmp/model.gguf
+          git clone --depth 1 --branch b5214 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_SERVER=OFF
+          cmake --build /tmp/llama.cpp/build --config Release --target llama-cli -j2
+          timeout 180 /tmp/llama.cpp/build/bin/llama-cli -m /tmp/model.gguf -p "What is 17 multiplied by 19? Answer with the number only." -n 24 --no-display-prompt > /tmp/model-smoke.txt
+          cat /tmp/model-smoke.txt
+          grep -Eq "323|three hundred twenty-three|Three hundred twenty-three" /tmp/model-smoke.txt || { echo "Model smoke test did not contain expected arithmetic answer"; exit 1; }
+          cp /tmp/model.gguf app/src/main/assets/sjai-model.gguf
+      - name: Upload bundled model for Android build
+        uses: actions/upload-artifact@v4
+        with:
+          name: sjai-model
+          path: app/src/main/assets/sjai-model.gguf
+          retention-days: 1
+
+  android-build:
+    needs: model-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sjai-model
+          path: app/src/main/assets
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install Android NDK and CMake
+        run: sdkmanager "ndk;27.0.12077973" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - name: Build release APK
+        run: gradle --no-daemon assembleRelease
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SJ-AI-Android-Release
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14

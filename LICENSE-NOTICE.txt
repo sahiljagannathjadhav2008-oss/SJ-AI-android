@@ -1,0 +1,8 @@
+SJ AI application code: Copyright (c) 2026 Sahil Jadhav.
+
+Third-party components:
+- Qwen3-0.6B base model: Apache License 2.0 (upstream model card: https://huggingface.co/Qwen/Qwen3-0.6B)
+- GGUF quantization: QuantFactory/Qwen3-0.6B-GGUF (https://huggingface.co/QuantFactory/Qwen3-0.6B-GGUF)
+- llama.cpp: MIT License (https://github.com/ggml-org/llama.cpp)
+
+This notice is informational. Include the complete upstream license texts and notices in any redistributed release, and verify all upstream terms before publication.
