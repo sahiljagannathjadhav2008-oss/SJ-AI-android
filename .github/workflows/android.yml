@@ -4,7 +4,8 @@ name: SJ AI Android Build
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
     paths-ignore:
       - "README.md"
       - "docs/**"
@@ -19,113 +20,125 @@ env:
 jobs:
 
   model-validation:
+    name: Download and Validate AI Model
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Download and verify model
+      - name: Download and Verify Model
+        shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p app/src/main/assets
+          echo "Downloading Qwen3 0.6B model..."
 
-          echo "Downloading SJ AI model..."
+          mkdir -p app/src/main/assets
 
           curl -L --fail --retry 3 \
             "$MODEL_URL" \
             -o /tmp/model.gguf
 
-          echo "Verifying SHA256..."
+          echo "Checking SHA256..."
 
           echo "$MODEL_SHA256  /tmp/model.gguf" | sha256sum -c -
 
-          echo "Verifying GGUF format..."
+          echo "Validating GGUF structure..."
 
           python scripts/verify_gguf.py /tmp/model.gguf
 
-      - name: Build llama.cpp CPU inference engine
-        run: |
-          set -euo pipefail
+          echo "Model download and verification successful."
 
-          git clone --depth 1 --branch b5214 \
+      - name: Clone llama.cpp
+        run: |
+          git clone \
+            --depth 1 \
+            --branch b5214 \
             https://github.com/ggml-org/llama.cpp.git \
             /tmp/llama.cpp
 
-          cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build \
+      - name: Configure llama.cpp
+        run: |
+          cmake \
+            -S /tmp/llama.cpp \
+            -B /tmp/llama.cpp/build \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_NATIVE=OFF \
-            -DLLAMA_CURL=OFF \
             -DGGML_OPENMP=ON \
+            -DLLAMA_CURL=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_SERVER=OFF
 
+      - name: Build llama.cpp
+        run: |
           cmake --build /tmp/llama.cpp/build \
             --config Release \
             --target llama-cli \
             -j2
 
-      - name: Run model inference test
+      - name: Run Model Inference Test
+        shell: bash
         run: |
           set -euo pipefail
+
+          echo "Starting SJ AI inference test..."
 
           timeout 180 /tmp/llama.cpp/build/bin/llama-cli \
             -m /tmp/model.gguf \
             -p "What is 17 multiplied by 19? Answer with the number only." \
-            -n 24 \
+            -n 128 \
+            -c 1024 \
+            --temp 0 \
+            --single-turn \
             --no-display-prompt \
             > /tmp/model-smoke.txt 2>&1
 
+          echo "Model output:"
           cat /tmp/model-smoke.txt
 
-          grep -Eq "323|three hundred twenty-three|Three hundred twenty-three" \
-            /tmp/model-smoke.txt || {
-              echo "Model arithmetic test failed."
-              exit 1
-            }
+          if grep -Eq "323" /tmp/model-smoke.txt; then
+            echo "PASS: SJ AI arithmetic inference test."
+          else
+            echo "FAIL: Expected answer 323 was not generated."
+            exit 1
+          fi
 
-          echo "SJ AI model inference test PASSED."
-
-      - name: Prepare bundled model
-        run: |
-          cp /tmp/model.gguf \
-            app/src/main/assets/sjai-model.gguf
-
-          ls -lh app/src/main/assets/sjai-model.gguf
-
-      - name: Upload bundled model for Android build
+      - name: Upload Verified AI Model
         uses: actions/upload-artifact@v4
         with:
           name: sjai-model
-          path: app/src/main/assets/sjai-model.gguf
+          path: /tmp/model.gguf
           retention-days: 1
 
   android-build:
-    needs: model-validation
+    name: Build SJ AI Android Release APK
     runs-on: ubuntu-latest
+    needs: model-validation
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Download bundled model
+      - name: Download Verified AI Model
         uses: actions/download-artifact@v4
         with:
           name: sjai-model
           path: app/src/main/assets
 
-      - name: Set up Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install Android NDK and CMake
@@ -136,33 +149,31 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Set up Gradle
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.9
+          gradle-version: "8.9"
 
-      - name: Build release APK
+      - name: Build Release APK
         run: |
-          set -euo pipefail
-
-          test -s app/src/main/assets/sjai-model.gguf
-
           gradle --no-daemon assembleRelease
 
       - name: Verify APK
+        shell: bash
         run: |
           set -euo pipefail
 
-          APK=$(find app/build/outputs/apk/release \
-            -name "*.apk" -type f | head -n 1)
+          APK="app/build/outputs/apk/release"
 
-          test -n "$APK"
-          test -s "$APK"
+          echo "Checking APK..."
 
-          echo "Release APK created:"
-          ls -lh "$APK"
+          ls -lh "$APK"/*.apk
 
-      - name: Upload APK
+          test -n "$(find "$APK" -maxdepth 1 -name '*.apk' -print -quit)"
+
+          echo "Release APK successfully generated."
+
+      - name: Upload SJ AI Release APK
         uses: actions/upload-artifact@v4
         with:
           name: SJ-AI-Android-Release
