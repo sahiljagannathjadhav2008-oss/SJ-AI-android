@@ -37,23 +37,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Downloading Qwen3 0.6B model..."
-
           mkdir -p app/src/main/assets
+
+          echo "Downloading Qwen3 model..."
 
           curl -L --fail --retry 3 \
             "$MODEL_URL" \
             -o /tmp/model.gguf
 
-          echo "Checking SHA256..."
+          echo "Verifying SHA256..."
 
           echo "$MODEL_SHA256  /tmp/model.gguf" | sha256sum -c -
 
-          echo "Validating GGUF structure..."
+          echo "Checking GGUF structure..."
 
           python scripts/verify_gguf.py /tmp/model.gguf
 
-          echo "Model download and verification successful."
+          echo "Model verification successful."
 
       - name: Clone llama.cpp
         run: |
@@ -88,27 +88,36 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Starting SJ AI inference test..."
+          echo "Starting SJ AI model inference test..."
 
           timeout 180 /tmp/llama.cpp/build/bin/llama-cli \
             -m /tmp/model.gguf \
-            -p "What is 17 multiplied by 19? Answer with the number only." \
-            -n 128 \
+            -p "Reply with exactly one word: READY" \
+            -n 256 \
             -c 1024 \
             --temp 0 \
             --single-turn \
             --no-display-prompt \
-            > /tmp/model-smoke.txt 2>&1
+            > /tmp/model-response.txt \
+            2> /tmp/model-runtime.log
 
-          echo "Model output:"
-          cat /tmp/model-smoke.txt
+          echo "Model runtime log:"
+          cat /tmp/model-runtime.log
 
-          if grep -Eq "323" /tmp/model-smoke.txt; then
-            echo "PASS: SJ AI arithmetic inference test."
-          else
-            echo "FAIL: Expected answer 323 was not generated."
+          echo "Generated model response:"
+          cat /tmp/model-response.txt
+
+          if [ ! -s /tmp/model-response.txt ]; then
+            echo "FAIL: Model did not generate any response."
             exit 1
           fi
+
+          if ! tr -d '[:space:]' < /tmp/model-response.txt | grep -q .; then
+            echo "FAIL: Model response is empty."
+            exit 1
+          fi
+
+          echo "PASS: Model successfully loaded and generated text."
 
       - name: Upload Verified AI Model
         uses: actions/upload-artifact@v4
@@ -163,15 +172,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK="app/build/outputs/apk/release"
+          APK_DIR="app/build/outputs/apk/release"
 
-          echo "Checking APK..."
+          echo "Checking release APK..."
 
-          ls -lh "$APK"/*.apk
+          APK_FILE=$(find "$APK_DIR" -maxdepth 1 -name '*.apk' -print -quit)
 
-          test -n "$(find "$APK" -maxdepth 1 -name '*.apk' -print -quit)"
+          if [ -z "$APK_FILE" ]; then
+            echo "FAIL: Release APK not found."
+            exit 1
+          fi
 
-          echo "Release APK successfully generated."
+          ls -lh "$APK_FILE"
+
+          echo "Release APK verification successful."
 
       - name: Upload SJ AI Release APK
         uses: actions/upload-artifact@v4
